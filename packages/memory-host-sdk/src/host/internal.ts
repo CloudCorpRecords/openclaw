@@ -15,7 +15,6 @@ import {
   statRegularFile,
   walkDirectory,
 } from "./fs-utils.js";
-import { hashText } from "./hash.js";
 import type { MemoryChunk } from "./markdown-chunks.js";
 import {
   buildMemoryMultimodalLabel,
@@ -30,7 +29,7 @@ import {
 import { retryTransientMemoryRead } from "./read-retry.js";
 import type { MemoryExtraPath } from "./types.js";
 
-export { hashText } from "./hash.js";
+export const hashText: (value: string) => string = sha256Hex;
 export { encodeMemoryEmbedding, decodeMemoryEmbedding } from "./embedding-vector.js";
 export {
   chunkMarkdown,
@@ -101,7 +100,7 @@ function expandHomePath(value: string): string {
   return value;
 }
 
-type NormalizedExtraMemoryPath = { path: string; pattern?: string };
+type NormalizedExtraMemoryPath = { path: string; pattern?: string; evergreen?: true };
 
 export function normalizeExtraMemoryPathEntries(
   workspaceDir: string,
@@ -114,6 +113,9 @@ export function normalizeExtraMemoryPathEntries(
     };
     if (typeof entry !== "string") {
       normalized.pattern = entry.pattern?.replaceAll("\\", "/");
+      if (entry.evergreen === true) {
+        normalized.evergreen = true;
+      }
     }
     return normalized;
   });
@@ -402,7 +404,7 @@ export async function buildFileEntry(
     }
     const contentText = buildMemoryMultimodalLabel(modality, normalizedPath);
     const dataHash = sha256Hex(buffer);
-    const chunkHash = hashText(
+    const chunkHash = sha256Hex(
       JSON.stringify({
         path: normalizedPath,
         contentText,
@@ -428,7 +430,7 @@ export async function buildFileEntry(
     absPath,
     mtimeMs: stat.mtimeMs,
     size: stat.size,
-    hash: hashText(buffer.toString("utf-8")),
+    hash: sha256Hex(buffer.toString("utf-8")),
     kind: "markdown",
   };
 }

@@ -41,8 +41,8 @@ import type {
 } from "./transcript-recent-text.js";
 import type { InternalSessionEntry, SessionEntry } from "./types.js";
 
-export type ChatHistoryResponsePage<Messages extends unknown[] | Uint8Array = unknown[]> = {
-  messages: Messages;
+export type ChatHistoryResponsePage = {
+  messages: unknown[];
   activity?: AgentHistoryActivity[];
   messagesBytes: number;
   responseHistoryBytes: number;
@@ -71,7 +71,11 @@ export type ChatHistoryPageAnchor = Pick<ChatHistoryPageCursor, "sessionId" | "s
 };
 
 export type ChatHistoryPage = {
-  encodedResponse?: ChatHistoryResponsePage<Uint8Array<ArrayBuffer>>;
+  encodedResponse?: Omit<ChatHistoryResponsePage, "messages" | "activity"> & {
+    messages: Uint8Array<ArrayBuffer>;
+    activity?: Uint8Array<ArrayBuffer>;
+  };
+  encodedMessagesDeflate?: Uint8Array<ArrayBuffer>;
   windowReset?: boolean;
   activeLeafEntryId?: string | null;
   deltaCursor?: string;
@@ -91,6 +95,8 @@ export type ChatHistoryPage = {
 
 export type ChatHistoryPageParams = {
   encodeResponse?: boolean;
+  deflateResponse?: boolean;
+  includePluginSteering?: boolean;
   compactionMetrics?: LegacyCompactionMetrics;
   entry: InternalSessionEntry | undefined;
   provider: string | undefined;
@@ -114,6 +120,7 @@ type SessionHistoryTranscriptMeta = {
   idempotencyKey?: string;
   seq?: number;
   turnBoundary?: boolean;
+  pluginSteering?: { pluginId: string; pluginName?: string; displayText?: string };
 };
 
 export type SessionHistoryMessage = Record<string, unknown> & {

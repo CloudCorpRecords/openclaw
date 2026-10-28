@@ -52,7 +52,8 @@ it("keeps the hover-only picker usable when the pointer enters its native popup"
   await expect.poll(() => popup.dataset.phase).toBe("open");
   expect(document.activeElement).toBe(view.getByRole("button", { name: "👍" }));
   await userEvent.click(view.getByRole("button", { name: "More…" }));
-  const input = view.getByRole("textbox", { name: "Emoji" });
+  await expect.poll(() => view.queryByRole("searchbox", { name: "Search emoji…" })).not.toBeNull();
+  const input = view.getByRole("searchbox", { name: "Search emoji…" });
   await expect.poll(() => document.activeElement).toBe(input);
   const closingAnimation = popup.animate({ opacity: [1, 0] }, { duration: 200 });
   closingAnimation.pause();

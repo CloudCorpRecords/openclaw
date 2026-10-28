@@ -1,13 +1,11 @@
 import { randomUUID } from "node:crypto";
+import type { Transport, JSONRPCMessage } from "@modelcontextprotocol/client";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { VERSION } from "../version.js";
 import type { SessionMcpRequesterScope } from "./agent-bundle-mcp-types.js";
-import { redactMcpDiagnosticError } from "./mcp-error.js";
-import { OpenClawStreamableHTTPClientTransport } from "./mcp-http-transport.js";
 import { resolveMcpTransportConfig } from "./mcp-transport-config.js";
-import { resolveMcpTransport } from "./mcp-transport.js";
 
 export const MCP_EVENTS_PROTOCOL_VERSION = "2026-07-28";
 export type McpEventRequestMethod =
@@ -18,12 +16,16 @@ export type McpEventRequestMethod =
 
 /** Preserve protocol dispositions without exposing remote diagnostic bodies or credentials. */
 class McpEventRequestError extends Error {
-  constructor(
-    readonly code: number,
-    readonly reason?: string,
-  ) {
+  constructor(code: number, reason?: string) {
     super("MCP Events request failed (code " + code + (reason ? ", reason " + reason : "") + ")");
     this.name = "McpEventRequestError";
+  }
+}
+
+/** Transport failures may carry credentials beyond their message; expose only redacted diagnostics. */
+class McpEventTransportError extends Error {
+  constructor(diagnostic: string) {
+    super(diagnostic, { cause: diagnostic });
   }
 }
 
@@ -53,6 +55,11 @@ export async function requestMcpEvent(params: {
     signal.throwIfAborted();
     params.assertCurrent();
   };
+  const [{ resolveMcpTransport }, { redactMcpDiagnosticError }] = await Promise.all([
+    import("./mcp-transport.js"),
+    import("./mcp-error.js"),
+  ]);
+  assertCurrent();
   const resolved = resolveMcpTransport(params.serverName, params.server, {
     cfg: params.cfg,
     agentDir: params.agentDir,
@@ -60,7 +67,7 @@ export async function requestMcpEvent(params: {
     requestHeaders: { "Mcp-Method": params.method },
     beforeRequest: assertCurrent,
   });
-  if (!resolved || !(resolved.transport instanceof OpenClawStreamableHTTPClientTransport)) {
+  if (!resolved || resolved.transportType !== "streamable-http") {
     throw new Error("MCP Events connection is unavailable for this subscription owner.");
   }
   const transport = resolved.transport;
@@ -69,29 +76,30 @@ export async function requestMcpEvent(params: {
   const response = createDeferredCore<unknown>();
   // start/authority can fail before the response is awaited.
   void response.promise.catch(() => undefined);
-  // oxlint-disable-next-line unicorn/prefer-add-event-listener -- Transport callback contract.
-  transport.onmessage = (message) => {
-    if (!("id" in message) || message.id !== id) {
-      return;
-    }
-    if ("error" in message) {
-      const reason = isRecord(message.error.data) ? message.error.data.reason : undefined;
-      response.reject(
-        new McpEventRequestError(
-          message.error.code,
-          typeof reason === "string" && /^[a-z_]{1,64}$/.test(reason) ? reason : undefined,
-        ),
-      );
-    } else if ("result" in message) {
-      response.resolve(message.result);
-    } else {
-      response.reject(new Error("MCP Events received an invalid response."));
-    }
-  };
-  // oxlint-disable-next-line unicorn/prefer-add-event-listener -- Transport callback contract.
-  transport.onerror = (error) => response.reject(error);
-  // oxlint-disable-next-line unicorn/prefer-add-event-listener -- Transport callback contract.
-  transport.onclose = () => response.reject(new Error("MCP Events connection closed."));
+  const callbacks = {
+    onmessage: (message: JSONRPCMessage) => {
+      if (!("id" in message) || message.id !== id) {
+        return;
+      }
+      if ("error" in message) {
+        const reason = isRecord(message.error.data) ? message.error.data.reason : undefined;
+        response.reject(
+          new McpEventRequestError(
+            message.error.code,
+            typeof reason === "string" && /^[a-z_]{1,64}$/.test(reason) ? reason : undefined,
+          ),
+        );
+      } else if ("result" in message) {
+        response.resolve(message.result);
+      } else {
+        response.reject(new Error("MCP Events received an invalid response."));
+      }
+    },
+    onerror: (error: Error) => response.reject(error),
+    onclose: () => response.reject(new Error("MCP Events connection closed.")),
+  } satisfies Pick<Transport, "onmessage" | "onerror" | "onclose">;
+  // SDK transports use a single owned callback set rather than EventTarget listeners.
+  Object.assign(transport, callbacks);
   const onAbort = () => response.reject(signal.reason);
   signal.addEventListener("abort", onAbort, { once: true });
   let sending: Promise<void> | undefined;
@@ -120,13 +128,15 @@ export async function requestMcpEvent(params: {
     if (error instanceof McpEventRequestError) {
       throw error;
     }
-    // Transport causes can retain credential-bearing URLs; only the sanitized diagnostic may escape.
-    // oxlint-disable-next-line eslint/preserve-caught-error
-    throw new Error(redactMcpDiagnosticError(error));
+    throw new McpEventTransportError(redactMcpDiagnosticError(error));
   } finally {
     signal.removeEventListener("abort", onAbort);
     // Closing cancels a still-open SSE response after its final JSON-RPC result.
-    await transport.close();
-    await sending?.catch(() => undefined);
+    try {
+      await transport.close();
+      await sending?.catch(() => undefined);
+    } finally {
+      Object.assign(transport, { onmessage: undefined, onerror: undefined, onclose: undefined });
+    }
   }
 }
