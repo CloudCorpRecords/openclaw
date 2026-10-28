@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { serialize } from "node:v8";
-import { expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
   prepareMemoryIndexChunks,
   type MemoryIndexPreparationInput,
